@@ -276,16 +276,33 @@ interface GraphPoint {
   value: number;
 }
 
-// (선택) 초기 더미 그래프
-const dummyDrowsinessData: GraphPoint[] = [
-  { t: 0, value: 1.05 },
-  { t: 15, value: 1.1 },
-  { t: 30, value: 2.5 },
-];
+// 안전한 타입 가드 & 변환기
+const isGraphPointArray = (v: unknown): v is GraphPoint[] =>
+  Array.isArray(v) &&
+  v.every(
+    (x) =>
+      x &&
+      typeof x === "object" &&
+      "t" in x &&
+      "value" in x &&
+      typeof (x as any).t === "number" &&
+      typeof (x as any).value === "number"
+  );
 
-// 숫자 배열을 그래프 포맷으로
-const toGraphPoints = (levels: number[]): GraphPoint[] =>
-  (levels || []).map((v, i) => ({ t: i, value: v }));
+// link 응답에서 넘어오는 drowsiness_levels는 이미 GraphPoint[] 예정
+const normalizeFromLink = (levels: unknown): GraphPoint[] => {
+  if (isGraphPointArray(levels)) return levels;
+  return [];
+};
+
+// finish 응답의 all_preds: number[] → GraphPoint[] (기본 120초 step)
+const toGraphFromPreds = (preds: unknown, stepSec = 120): GraphPoint[] => {
+  if (!Array.isArray(preds)) return [];
+  const nums = preds
+    .map((v) => (typeof v === "string" ? Number(v) : v))
+    .filter((v) => typeof v === "number" && !Number.isNaN(v)) as number[];
+  return nums.map((value, i) => ({ t: i * stepSec, value }));
+};
 
 // --- LectureDetail Component ---
 const Lectures = () => {
@@ -367,7 +384,7 @@ const Lectures = () => {
   const [authCode, setAuthCode] = useState<string | null>(null);
   const [isPaired, setIsPaired] = useState<boolean>(false);
   const [isDetecting, setIsDetecting] = useState<boolean>(false);
-  const [drowsinessData, setDrowsinessData] = useState<GraphPoint[] | null>([]);
+  const [drowsinessData, setDrowsinessData] = useState<GraphPoint[]>([]);
   const [drowsinessMessage, setDrowsinessMessage] = useState<string | null>(
     "기기에서 인증 코드를 입력해 페어링을 완료하면 재생이 시작됩니다."
   );
@@ -427,49 +444,81 @@ const Lectures = () => {
     }
   };
 
+  // 🔧 실패 시 초기 상태로 완전 복귀
+  const resetToPreSession = useCallback((message?: string) => {
+    console.log("resetToPreSession 호출", { message });
+    setSessionId(null);
+    setAuthCode(null);
+    setIsPaired(false);
+    setIsDetecting(false);
+    setIsFirstWatch(true);         // Mesh 보이게
+    setIsPlaybackLocked(true);     // '세션 시작' 버튼 보이게
+    setDrowsinessData([]);         // 그래프 비우기
+    setDrowsinessMessage(message ?? "세션이 종료되었습니다. 다시 시작해 주세요.");
+    setAllowProgressSave(false);   // 첫 시청 중 저장 금지
+    // pendingHlsSrc는 그대로 두면 페어링 완료 시 자동 재생 가능(초기 설계 유지)
+  }, []);
+
   // 🔔 영상 종료 시 자동 finish
-  const handleVideoEnded = useCallback(async () => {
-    if (sentAutoFinishRef.current) return;
-    sentAutoFinishRef.current = true;
+  const handleVideoEnded = useCallback(
+    async () => {
+      if (sentAutoFinishRef.current) return;
+      sentAutoFinishRef.current = true;
 
-    // 진행률 최종 저장 시도
-    debouncedSaveProgress.cancel();
-    await performSave();
+      // 진행률 최종 저장 시도
+      debouncedSaveProgress.cancel();
+      await performSave();
 
-    if (sessionId) {
-      try {
-        // ✅ finish 대기 UI on
-        setIsFinishing(true);
+      if (sessionId) {
+        try {
+          // ✅ finish 대기 UI on
+          setIsFinishing(true);
 
-        const resp = await apiClient.post("/students/drowsiness/finish", {
-          session_id: sessionId,
-          student_uid: uid,
-        });
+          const resp = await apiClient.post("/students/drowsiness/finish", {
+            session_id: sessionId,
+            student_uid: uid,
+          });
+          console.log("응답 완료1", resp);
 
-        setDrowsinessData(toGraphPoints(resp.data || []));
-        // ✅ 200 성공 시 메시지 + 토스트
-        if (!resp || resp.status === 200) {
-          setDrowsinessMessage("졸음 분석이 완료되었습니다.");
-          setToast("졸음 분석이 완료되었습니다.");
-          // ✅ 초기 시청 완료 후부터 진척도 저장 시작
-          setAllowProgressSave(true);
-        } else {
-          setDrowsinessMessage("졸음 분석 처리에 실패했습니다.");
+          const status = resp?.status ?? 0;
+
+          // finish 응답에서 all_preds → GraphPoint[]
+          const preds = resp?.data?.prediction?.details?.all_preds ?? [];
+          const points = toGraphFromPreds(preds, 120); // 2분 단위(120초)
+          setDrowsinessData(points);
+
+          if (status === 200) {
+            console.log("resp 200 진입", resp);
+            setDrowsinessMessage(
+              resp?.data?.message || "졸음 분석이 완료되었습니다."
+            );
+            setToast("졸음 분석이 완료되었습니다.");
+            setAllowProgressSave(true);
+
+            // ✅ 알림 후 새로고침
+            alert("졸음 분석이 완료되었습니다.");
+            window.location.reload();
+          } else {
+            console.log("resp 200 아님 - 실패 처리", status, resp);
+            resetToPreSession("분석 처리에 실패했습니다. 다시 시도해 주세요.");
+          }
+        } catch (e: any) {
+          console.error("Auto finish failed:", e);
+          const httpStatus = e?.response?.status;
+          // 4xx/5xx 포함 모든 에러 동일 정책으로 초기화
+          resetToPreSession(
+            httpStatus
+              ? `분석 처리에 실패했습니다. (HTTP ${httpStatus}) 다시 시도해 주세요.`
+              : "졸음 분석 처리에 실패했습니다.(HTTP 요청 에러)"
+          );
+        } finally {
+          // finish 요청 이후 상태 정리
+          setIsFinishing(false);
         }
-      } catch (e) {
-        console.error("Auto finish failed:", e);
-        setDrowsinessMessage("졸음 분석 처리에 실패했습니다.");
-      } finally {
-        setSessionId(null);
-        setAuthCode(null);
-        setIsPaired(false);
-        setIsDetecting(false);
-        setIsFirstWatch(false);
-        // ✅ finish 대기 UI off
-        setIsFinishing(false);
       }
-    }
-  }, [debouncedSaveProgress, performSave, sessionId, uid]);
+    },
+    [debouncedSaveProgress, performSave, sessionId, uid, resetToPreSession]
+  );
 
   // Firebase 페어링 상태 감지 + 잠금 해제
   useEffect(() => {
@@ -524,14 +573,16 @@ const Lectures = () => {
       const response = await apiClient.post<{
         s3_link: string;
         watched_percent: number;
-        drowsiness_levels?: number[];
+        drowsiness_levels?: unknown; // GraphPoint[] 예상, unknown으로 받기
       }>("/students/lecture/video/link", { video_id: videoId });
 
       const s3 = response.data?.s3_link;
       const watched = response.data?.watched_percent ?? 0;
-      const levels = response.data?.drowsiness_levels ?? [];
+      const levelsRaw = response.data?.drowsiness_levels;
+      const levels = normalizeFromLink(levelsRaw); // 안전 변환
 
-      console.log(levels);
+      // 디버깅용
+      console.log("link levelsRaw:", levelsRaw);
 
       if (!s3) throw new Error("비디오 링크를 가져올 수 없습니다.");
 
@@ -558,7 +609,7 @@ const Lectures = () => {
       setPendingHlsSrc(null);
       setInitialWatchedPercent(watched || 0);
       setIsFirstWatch(false);
-      if (levels.length > 0) setDrowsinessData(toGraphPoints(levels));
+      setDrowsinessData(levels); // 그대로 사용
 
       // ✅ 이어보기/재시청은 저장 허용
       setAllowProgressSave(true);
@@ -761,7 +812,7 @@ const Lectures = () => {
                   src={hlsSrc}
                   onTimeUpdate={handleTimeUpdate}
                   initialSeekPercent={initialWatchedPercent}
-                  graphData={drowsinessData || []}
+                  graphData={drowsinessData}
                   restrictInteract={initialWatchedPercent === 0}
                   onEnded={handleVideoEnded} // ✅ 끝나면 자동 finish
                 />
