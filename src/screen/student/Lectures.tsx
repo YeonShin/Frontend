@@ -63,6 +63,30 @@ const VideoList = styled.ul`
   margin: 0;
   display: flex;
   flex-direction: column;
+  max-height: 70vh;
+  overflow-y: scroll;
+
+  /* ✅ 스크롤바 스타일 - 거의 안 보이게 */
+  &::-webkit-scrollbar {
+    width: 6px; /* 얇게 */
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background-color: rgba(150, 150, 150, 0.2); /* 아주 옅은 회색 */
+    border-radius: 3px;
+  }
+
+  &::-webkit-scrollbar-thumb:hover {
+    background-color: rgba(150, 150, 150, 0.35); /* 마우스 올리면 조금 더 보이게 */
+  }
+
+  &::-webkit-scrollbar-track {
+    background: transparent; /* 트랙은 투명 */
+  }
+
+  /* Firefox */
+  scrollbar-width: thin; /* 얇게 */
+  scrollbar-color: rgba(150, 150, 150, 0.2) transparent;
 `;
 
 const VideoListItem = styled.li<{ isActive: boolean }>`
@@ -186,6 +210,17 @@ const SectionTitle = styled.h2`
   color: ${(props) => props.theme.textColor};
 `;
 
+const Toast = styled.div`
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  padding: 10px 14px;
+  background: rgba(20, 22, 28, 0.9);
+  color: #fff;
+  border-radius: 8px;
+  z-index: 9999;
+`;
+
 // --- Video 타입 정의 (API 응답 기반) ---
 interface Video {
   id: number;
@@ -241,6 +276,23 @@ const Lectures = () => {
   const [lockReason, setLockReason] = useState<string | null>(null);
   const [isFirstWatch, setIsFirstWatch] = useState<boolean>(false);
 
+  // ✅ 추가: finish 대기/토스트/진척도 저장 제어
+  const [isFinishing, setIsFinishing] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
+  const [allowProgressSave, setAllowProgressSave] = useState(true);
+  const allowSaveRef = useRef(true);
+
+  useEffect(() => {
+    allowSaveRef.current = allowProgressSave;
+  }, [allowProgressSave]);
+
+  // 토스트 자동 숨김
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 3000);
+    return () => clearTimeout(t);
+  }, [toast]);
+
   const progressRef = useRef<{ videoId: number | null; percent: number }>({
     videoId: null,
     percent: 0,
@@ -261,6 +313,9 @@ const Lectures = () => {
 
   // === 저장 로직: 선언을 위쪽에 두고 useMemo로 디바운스 인스턴스 고정 ===
   const performSave = useCallback(async () => {
+    // ✅ 첫 시청 동안은 저장 금지
+    if (!allowSaveRef.current) return;
+
     const { videoId, percent } = progressRef.current;
     if (videoId !== null && percent > 0 && percent <= 100) {
       try {
@@ -319,21 +374,35 @@ const Lectures = () => {
 
     if (sessionId) {
       try {
+        // ✅ finish 대기 UI on
+        setIsFinishing(true);
+
         const resp = await apiClient.post("/students/drowsiness/finish", {
           session_id: sessionId,
           student_uid: uid,
         });
+
         setDrowsinessData(toGraphPoints(resp.data || []));
-        setDrowsinessMessage("Session finished.");
+        // ✅ 200 성공 시 메시지 + 토스트
+        if (!resp || resp.status === 200) {
+          setDrowsinessMessage("졸음 분석이 완료되었습니다.");
+          setToast("졸음 분석이 완료되었습니다.");
+          // ✅ 초기 시청 완료 후부터 진척도 저장 시작
+          setAllowProgressSave(true);
+        } else {
+          setDrowsinessMessage("졸음 분석 처리에 실패했습니다.");
+        }
       } catch (e) {
         console.error("Auto finish failed:", e);
-        setDrowsinessMessage("Auto finish failed.");
+        setDrowsinessMessage("졸음 분석 처리에 실패했습니다.");
       } finally {
         setSessionId(null);
         setAuthCode(null);
         setIsPaired(false);
         setIsDetecting(false);
         setIsFirstWatch(false);
+        // ✅ finish 대기 UI off
+        setIsFinishing(false);
       }
     }
   }, [debouncedSaveProgress, performSave, sessionId, uid]);
@@ -344,7 +413,6 @@ const Lectures = () => {
 
     setIsPaired(false);
     const dbRef = ref(db, `${sessionId}/pairing/paired`);
-
 
     const listener = onValue(dbRef, (snapshot) => {
       if (snapshot.val() === true) {
@@ -362,7 +430,6 @@ const Lectures = () => {
         });
       }
     });
-
 
     return () => {
       off(dbRef, "value", listener);
@@ -400,12 +467,12 @@ const Lectures = () => {
       const watched = response.data?.watched_percent ?? 0;
       const levels = response.data?.drowsiness_levels ?? [];
 
-      console.log(levels)
+      console.log(levels);
 
       if (!s3) throw new Error("비디오 링크를 가져올 수 없습니다.");
 
       // ✅ 최초 시청 & 졸음 데이터 없음 → 재생 잠금
-      if (watched === 0 && levels.length === 0) {
+      if (levels.length === 0) {
         setIsPlaybackLocked(true);
         setLockReason(
           "처음 시청하는 영상입니다. 기기를 페어링하여 졸음 감지 세션을 시작해 주세요."
@@ -414,6 +481,8 @@ const Lectures = () => {
         setDrowsinessData([]); // 그래프 없음
         setInitialWatchedPercent(0);
         setIsFirstWatch(true);
+        // ✅ 첫 시청 동안은 진척도 저장 비활성화
+        setAllowProgressSave(false);
         return; // 재생하지 않음
       }
 
@@ -426,6 +495,9 @@ const Lectures = () => {
       setInitialWatchedPercent(watched || 0);
       setIsFirstWatch(false);
       if (levels.length > 0) setDrowsinessData(toGraphPoints(levels));
+
+      // ✅ 이어보기/재시청은 저장 허용
+      setAllowProgressSave(true);
     } catch (err: any) {
       console.error(`[fetchHlsLink] Error fetching HLS link for ${videoId}:`, err);
       setPlayerError(err.message || "비디오 링크 로딩 중 오류 발생");
@@ -447,8 +519,7 @@ const Lectures = () => {
       setLectureName(passedLectureName || `Lecture ID ${lectureId}`);
       try {
         const lectureIdNumber = parseInt(lectureId, 10);
-        if (isNaN(lectureIdNumber))
-        throw new Error("Invalid Lecture ID format.");
+        if (isNaN(lectureIdNumber)) throw new Error("Invalid Lecture ID format.");
         const response = await apiClient.post<{ videos: Video[] }>(
           "/students/lecture/video",
           { lecture_id: lectureIdNumber }
@@ -491,7 +562,10 @@ const Lectures = () => {
           percent >= 0 && percent <= 100 ? percent : currentPercentInRef;
         if (newPercent > currentPercentInRef) {
           progressRef.current.percent = newPercent;
-          debouncedSaveProgress();
+          // ✅ 첫 시청 동안은 저장 안 함
+          if (allowSaveRef.current) {
+            debouncedSaveProgress();
+          }
         }
       }
     },
@@ -544,9 +618,9 @@ const Lectures = () => {
                       onClick={() => handleVideoSelect(video)}
                     >
                       <VideoInfo>
-                        <VideoMeta>Week {video.index + 1}</VideoMeta>
+                        <VideoMeta>Week {video.index}</VideoMeta>
                         <VideoTitle>
-                          Chapter {video.index + 1}. {video.title}
+                          Chapter {video.index}. {video.title}
                         </VideoTitle>
                         <VideoMeta>
                           {new Date(video.upload_at).toLocaleDateString()}
@@ -580,6 +654,11 @@ const Lectures = () => {
 
         <RightColumn isListVisible={isListVisible}>
           <Card>
+            {/* ✅ finish 대기 중 메시지 */}
+            {isFinishing && (
+              <MessageContainer>졸음 분석 진행 중...</MessageContainer>
+            )}
+
             {playerLoading && (
               <MessageContainer>Loading video...</MessageContainer>
             )}
@@ -602,9 +681,7 @@ const Lectures = () => {
                   {drowsinessMessage && (
                     <DrowsinessMessage>{drowsinessMessage}</DrowsinessMessage>
                   )}
-                  <DrowsinessMessage>
-                    
-                  </DrowsinessMessage>
+                  <DrowsinessMessage></DrowsinessMessage>
                 </div>
               </MessageContainer>
             )}
@@ -646,6 +723,9 @@ const Lectures = () => {
           )}
         </RightColumn>
       </ContentLayout>
+
+      {/* ✅ 토스트 */}
+      {toast && <Toast>{toast}</Toast>}
     </DetailPageContainer>
   );
 };
