@@ -239,6 +239,7 @@ const Lectures = () => {
   // 🔒 재생 잠금(처음 시청 & 졸음데이터 없음)
   const [isPlaybackLocked, setIsPlaybackLocked] = useState<boolean>(false);
   const [lockReason, setLockReason] = useState<string | null>(null);
+  const [isFirstWatch, setIsFirstWatch] = useState<boolean>(false);
 
   const progressRef = useRef<{ videoId: number | null; percent: number }>({
     videoId: null,
@@ -252,7 +253,7 @@ const Lectures = () => {
   const [isDetecting, setIsDetecting] = useState<boolean>(false);
   const [drowsinessData, setDrowsinessData] = useState<GraphPoint[] | null>([]);
   const [drowsinessMessage, setDrowsinessMessage] = useState<string | null>(
-    "Start the session to begin drowsiness detection."
+    "기기에서 인증 코드를 입력해 페어링을 완료하면 재생이 시작됩니다."
   );
 
   // ▶️ 자동 finish 중복 방지
@@ -307,29 +308,6 @@ const Lectures = () => {
     }
   };
 
-  const handleFinishSession = async () => {
-    if (!sessionId) {
-      setDrowsinessMessage("Session not started.");
-      return;
-    }
-    try {
-      const response = await apiClient.post("/students/drowsiness/finish", {
-        session_id: sessionId,
-        student_uid: uid,
-      });
-      setDrowsinessData(toGraphPoints(response.data || []));
-      setDrowsinessMessage("Session finished. Click 'Start Session' to begin a new one.");
-    } catch (error) {
-      console.error("Error finishing session:", error);
-      setDrowsinessMessage("Failed to finish session.");
-    } finally {
-      setSessionId(null);
-      setAuthCode(null);
-      setIsPaired(false);
-      setIsDetecting(false);
-    }
-  };
-
   // 🔔 영상 종료 시 자동 finish
   const handleVideoEnded = useCallback(async () => {
     if (sentAutoFinishRef.current) return;
@@ -355,6 +333,7 @@ const Lectures = () => {
         setAuthCode(null);
         setIsPaired(false);
         setIsDetecting(false);
+        setIsFirstWatch(false);
       }
     }
   }, [debouncedSaveProgress, performSave, sessionId, uid]);
@@ -434,6 +413,7 @@ const Lectures = () => {
         setPendingHlsSrc(s3); // 페어링 완료 시 재생
         setDrowsinessData([]); // 그래프 없음
         setInitialWatchedPercent(0);
+        setIsFirstWatch(true);
         return; // 재생하지 않음
       }
 
@@ -444,6 +424,7 @@ const Lectures = () => {
       setHlsSrc(s3);
       setPendingHlsSrc(null);
       setInitialWatchedPercent(watched || 0);
+      setIsFirstWatch(false);
       if (levels.length > 0) setDrowsinessData(toGraphPoints(levels));
     } catch (err: any) {
       console.error(`[fetchHlsLink] Error fetching HLS link for ${videoId}:`, err);
@@ -617,8 +598,12 @@ const Lectures = () => {
                   >
                     {isDetecting ? "세션 진행 중..." : "졸음 감지 세션 시작"}
                   </DrowsinessButton>
+
+                  {drowsinessMessage && (
+                    <DrowsinessMessage>{drowsinessMessage}</DrowsinessMessage>
+                  )}
                   <DrowsinessMessage>
-                    기기에서 인증 코드를 입력해 페어링을 완료하면 재생이 시작됩니다.
+                    
                   </DrowsinessMessage>
                 </div>
               </MessageContainer>
@@ -653,26 +638,12 @@ const Lectures = () => {
             )}
           </Card>
 
-          <Card>
-            <SectionTitle>Drowsiness Detection</SectionTitle>
-            <MediaPipeFaceMesh sessionId={sessionId} isPaired={isPaired} />
-            {!isDetecting ? (
-              <DrowsinessButton
-                onClick={handleStartSession}
-                disabled={!selectedVideo}
-              >
-                Start Session
-              </DrowsinessButton>
-            ) : (
-              <DrowsinessButton onClick={handleFinishSession}>
-                Finish Session
-              </DrowsinessButton>
-            )}
-
-            {drowsinessMessage && (
-              <DrowsinessMessage>{drowsinessMessage}</DrowsinessMessage>
-            )}
-          </Card>
+          {isFirstWatch && (
+            <Card>
+              <SectionTitle>Drowsiness Detection</SectionTitle>
+              <MediaPipeFaceMesh sessionId={sessionId} isPaired={isPaired} />
+            </Card>
+          )}
         </RightColumn>
       </ContentLayout>
     </DetailPageContainer>
