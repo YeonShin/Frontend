@@ -1,7 +1,7 @@
 // src/screen/student/LectureDetail.tsx
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import styled from "styled-components";
-import { useParams, useNavigate, useLocation } from "react-router-dom";
+import { useParams, useNavigate, useLocation, useBlocker } from "react-router-dom";
 import apiClient from "../../api/apiClient"; // Axios 클라이언트
 import { debounce } from "lodash";
 import MediaPipeFaceMesh from "../../components/mediapipe/MediaPipeFaceMesh";
@@ -11,6 +11,46 @@ import { ref, onValue, off } from "firebase/database";
 import { useAuthStore } from "../../authStore";
 
 // --- Styled Components for Detail Page ---
+
+// ✅ 오버레이와 스피너 스타일 추가
+const Overlay = styled.div`
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.7);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 10000;
+  color: white;
+  flex-direction: column;
+`;
+
+const Spinner = styled.div`
+  border: 4px solid rgba(255, 255, 255, 0.3);
+  border-radius: 50%;
+  border-top: 4px solid #fff;
+  width: 40px;
+  height: 40px;
+  animation: spin 1s linear infinite;
+  margin-bottom: 20px;
+
+  @keyframes spin {
+    0% {
+      transform: rotate(0deg);
+    }
+    100% {
+      transform: rotate(360deg);
+    }
+  }
+`;
+
+const OverlayMessage = styled.p`
+  font-size: 1.1rem;
+  font-weight: 500;
+`;
 
 const DetailPageContainer = styled.div`
   width: 100%;
@@ -281,6 +321,30 @@ const Lectures = () => {
   const [toast, setToast] = useState<string | null>(null);
   const [allowProgressSave, setAllowProgressSave] = useState(true);
   const allowSaveRef = useRef(true);
+
+  // ✅ 페이지 이탈 방지 로직
+  useBlocker(() => {
+    if (isFinishing) {
+      return !window.confirm(
+        "분석이 진행 중입니다. 페이지를 벗어나면 데이터가 유실될 수 있습니다. 정말로 이동하시겠습니까?"
+      );
+    }
+    return false;
+  });
+
+  useEffect(() => {
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (isFinishing) {
+        event.preventDefault();
+        event.returnValue = ""; // Chrome에서 프롬프트를 표시하기 위해 필요
+      }
+    };
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => {
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+    };
+  }, [isFinishing]);
 
   useEffect(() => {
     allowSaveRef.current = allowProgressSave;
@@ -726,6 +790,14 @@ const Lectures = () => {
 
       {/* ✅ 토스트 */}
       {toast && <Toast>{toast}</Toast>}
+
+      {/* ✅ 로딩 오버레이 */}
+      {isFinishing && (
+        <Overlay>
+          <Spinner />
+          <OverlayMessage>졸음 수준 분석 진행 중...</OverlayMessage>
+        </Overlay>
+      )}
     </DetailPageContainer>
   );
 };

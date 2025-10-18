@@ -186,7 +186,7 @@ const VideoJSPlayer: React.FC<VideoJSPlayerProps> = ({
       if (!videoRef.current) return;
 
       const player = videojs(videoRef.current, {
-        autoplay: false,
+        autoplay: true,
         controls: true,
         fill: true,
         sources: [{ src, type: "application/x-mpegURL" }],
