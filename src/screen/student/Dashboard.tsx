@@ -2,6 +2,8 @@ import React, { useState, useEffect } from "react";
 import styled from "styled-components";
 import apiClient from "../../api/apiClient";
 import { useNavigate } from "react-router-dom";
+import profileImage from '../../assets/profileImage.svg'
+
 
 // --- Styled Components for Dashboard ---
 const MainTitle = styled.h2`
@@ -524,7 +526,7 @@ const Dashboard = () => {
               <ProfileImage
                 src={
                   profile.profile_image_url ||
-                  "https://via.placeholder.com/80x80.png?text=User"
+                  profileImage
                 }
                 alt="Profile"
                 crossOrigin="anonymous" /* 이 속성을 추가합니다! */
