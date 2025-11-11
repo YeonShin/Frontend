@@ -199,7 +199,7 @@ const Main = () => {
   const isSettingsActive =
     location.pathname === settingsPath ||
     location.pathname.startsWith(settingsPath + "/");
-    
+
   const handleLogout = () => {
     logout(); // Zustand 스토어의 logout 액션 호출
     navigate("/login"); // 로그인 페이지로 이동
@@ -207,7 +207,7 @@ const Main = () => {
   return (
     <div style={{ display: "flex" }}>
       <SidebarContainer>
-        <SidebarTitle>Project Title</SidebarTitle>
+        <SidebarTitle> </SidebarTitle>
 
         <NavList>
           {navItems.map((item) => {

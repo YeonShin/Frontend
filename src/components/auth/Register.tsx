@@ -443,7 +443,7 @@ export default function Register() {
   return (
     <PageContainer>
       <Header>
-        <ProjectTitle>Project Title</ProjectTitle>
+        <ProjectTitle> </ProjectTitle>
         <ThemeToggleButton onClick={toggleTheme}>
           {isDark ? (
             <span className="material-symbols-outlined">light_mode</span>
@@ -555,7 +555,10 @@ export default function Register() {
             </SubmitButton>
 
             <SignInLinkText>
-              Already have an account? <SignInLink href="#" onClick={() => navigate("/login")}>Sign In</SignInLink>
+              Already have an account?{" "}
+              <SignInLink href="#" onClick={() => navigate("/login")}>
+                Sign In
+              </SignInLink>
             </SignInLinkText>
           </StyledForm>
         </FormContainer>

@@ -644,7 +644,7 @@ const Dashboard = () => {
 
   return (
     <DashboardContainer>
-      <MainTitle>Dashboard</MainTitle>
+      <MainTitle></MainTitle>
       <Row>
         <Card>
           <CardTitle>Today's Class</CardTitle>

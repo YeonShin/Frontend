@@ -180,7 +180,7 @@ const AdminMain = () => {
       {" "}
       {/* 전체 레이아웃을 감싸는 Wrapper */}
       <SidebarContainer>
-        <SidebarTitle>Project Title</SidebarTitle>
+        <SidebarTitle> </SidebarTitle>
 
         <NavList>
           {navItems.map((item) => {
@@ -214,7 +214,6 @@ const AdminMain = () => {
             <Icon className="material-symbols-outlined">logout</Icon>
           </LogoutButton>
         </SidebarFooter>
-
       </SidebarContainer>
       <MainContent>
         {/* 하위 페이지(예: User/Student 목록)가 렌더링될 위치 */}

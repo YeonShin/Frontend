@@ -447,7 +447,7 @@ export default function Login() {
   return (
     <PageContainer>
       <Header>
-        <ProjectTitle>Project Title</ProjectTitle>
+        <ProjectTitle> </ProjectTitle>
         <ThemeToggleButton onClick={toggleTheme}>
           {isDark ? (
             <span className="material-symbols-outlined">light_mode</span>

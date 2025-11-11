@@ -210,7 +210,7 @@ const Main = () => {
     <div style={{ display: "flex" }}>
       <SidebarContainer>
         {/* 프로젝트 타이틀 (기존 Logo 대체) */}
-        <SidebarTitle>Project Title</SidebarTitle>
+        <SidebarTitle> </SidebarTitle>
 
         <NavList>
           {navItems.map((item) => {
