@@ -40,7 +40,7 @@ const NavList = styled.ul`
   gap: 10px;
 `;
 
-const NavItem = styled.li<{ isActive: boolean }>`
+const NavItem = styled.li<{ $isactive: boolean }>`
   display: flex;
   align-items: center;
   gap: 15px;
@@ -54,7 +54,7 @@ const NavItem = styled.li<{ isActive: boolean }>`
   color: ${(props) => props.theme.subTextColor};
 
   ${(props) =>
-    props.isActive &&
+    props.$isactive &&
     css`
       background-color: ${(props) => props.theme.formContainerColor};
       color: ${(props) => props.theme.highlightColor};
@@ -63,7 +63,7 @@ const NavItem = styled.li<{ isActive: boolean }>`
 
   &:hover {
     ${(props) =>
-      !props.isActive &&
+      !props.$isactive &&
       css`
         background-color: ${(props) => props.theme.subTextColor}10;
         color: ${(props) => props.theme.highlightColor};
@@ -111,7 +111,7 @@ const LogoutButton = styled.button`
   }
 `;
 // 하단 설정 아이콘 버튼 스타일 (NavItem과 유사하게)
-const SettingsButton = styled.div<{ isActive: boolean }>`
+const SettingsButton = styled.div<{ $isactive: boolean }>`
   display: flex;
   align-items: center;
   gap: 15px; // 아이콘만 있을 경우 불필요할 수 있음
@@ -123,7 +123,7 @@ const SettingsButton = styled.div<{ isActive: boolean }>`
   transition: background-color 0.2s ease-in-out, color 0.2s ease-in-out;
 
   ${(props) =>
-    props.isActive &&
+    props.$isactive &&
     css`
       background-color: ${(props) => props.theme.formContainerColor};
       color: ${(props) => props.theme.highlightColor};
@@ -131,7 +131,7 @@ const SettingsButton = styled.div<{ isActive: boolean }>`
 
   &:hover {
     ${(props) =>
-      !props.isActive &&
+      !props.$isactive &&
       css`
         background-color: ${(props) => props.theme.subTextColor}10;
         color: ${(props) => props.theme.highlightColor};
@@ -211,13 +211,13 @@ const Main = () => {
 
         <NavList>
           {navItems.map((item) => {
-            const isActive =
+            const $isactive =
               location.pathname === item.path ||
               location.pathname.startsWith(item.path + "/");
             return (
               <NavItem
                 key={item.path}
-                isActive={isActive}
+                $isactive={$isactive}
                 onClick={() => navigate(item.path)}
               >
                 <Icon className="material-symbols-outlined">{item.icon}</Icon>
@@ -239,7 +239,7 @@ const Main = () => {
           </ThemeToggleButtonBottom>
           {/* 설정 아이콘 버튼 */}
           <SettingsButton
-            isActive={isSettingsActive}
+            $isactive={isSettingsActive}
             onClick={() => navigate(settingsPath)}
             title="Settings"
           >

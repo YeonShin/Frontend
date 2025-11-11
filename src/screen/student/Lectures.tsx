@@ -1,7 +1,7 @@
 // src/screen/student/LectureDetail.tsx
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import styled from "styled-components";
-import { useParams, useNavigate, useLocation } from "react-router-dom";
+import { useParams, useNavigate, useLocation, useBlocker } from "react-router-dom";
 import apiClient from "../../api/apiClient"; // Axios 클라이언트
 import { debounce } from "lodash";
 import MediaPipeFaceMesh from "../../components/mediapipe/MediaPipeFaceMesh";
@@ -11,6 +11,46 @@ import { ref, onValue, off } from "firebase/database";
 import { useAuthStore } from "../../authStore";
 
 // --- Styled Components for Detail Page ---
+
+// ✅ 오버레이와 스피너 스타일 추가
+const Overlay = styled.div`
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.7);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 10000;
+  color: white;
+  flex-direction: column;
+`;
+
+const Spinner = styled.div`
+  border: 4px solid rgba(255, 255, 255, 0.3);
+  border-radius: 50%;
+  border-top: 4px solid #fff;
+  width: 40px;
+  height: 40px;
+  animation: spin 1s linear infinite;
+  margin-bottom: 20px;
+
+  @keyframes spin {
+    0% {
+      transform: rotate(0deg);
+    }
+    100% {
+      transform: rotate(360deg);
+    }
+  }
+`;
+
+const OverlayMessage = styled.p`
+  font-size: 1.1rem;
+  font-weight: 500;
+`;
 
 const DetailPageContainer = styled.div`
   width: 100%;
@@ -63,6 +103,30 @@ const VideoList = styled.ul`
   margin: 0;
   display: flex;
   flex-direction: column;
+  max-height: 70vh;
+  overflow-y: scroll;
+
+  /* ✅ 스크롤바 스타일 - 거의 안 보이게 */
+  &::-webkit-scrollbar {
+    width: 6px; /* 얇게 */
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background-color: rgba(150, 150, 150, 0.2); /* 아주 옅은 회색 */
+    border-radius: 3px;
+  }
+
+  &::-webkit-scrollbar-thumb:hover {
+    background-color: rgba(150, 150, 150, 0.35); /* 마우스 올리면 조금 더 보이게 */
+  }
+
+  &::-webkit-scrollbar-track {
+    background: transparent; /* 트랙은 투명 */
+  }
+
+  /* Firefox */
+  scrollbar-width: thin; /* 얇게 */
+  scrollbar-color: rgba(150, 150, 150, 0.2) transparent;
 `;
 
 const VideoListItem = styled.li<{ isActive: boolean }>`
@@ -186,6 +250,17 @@ const SectionTitle = styled.h2`
   color: ${(props) => props.theme.textColor};
 `;
 
+const Toast = styled.div`
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  padding: 10px 14px;
+  background: rgba(20, 22, 28, 0.9);
+  color: #fff;
+  border-radius: 8px;
+  z-index: 9999;
+`;
+
 // --- Video 타입 정의 (API 응답 기반) ---
 interface Video {
   id: number;
@@ -201,16 +276,33 @@ interface GraphPoint {
   value: number;
 }
 
-// (선택) 초기 더미 그래프
-const dummyDrowsinessData: GraphPoint[] = [
-  { t: 0, value: 1.05 },
-  { t: 15, value: 1.1 },
-  { t: 30, value: 2.5 },
-];
+// 안전한 타입 가드 & 변환기
+const isGraphPointArray = (v: unknown): v is GraphPoint[] =>
+  Array.isArray(v) &&
+  v.every(
+    (x) =>
+      x &&
+      typeof x === "object" &&
+      "t" in x &&
+      "value" in x &&
+      typeof (x as any).t === "number" &&
+      typeof (x as any).value === "number"
+  );
 
-// 숫자 배열을 그래프 포맷으로
-const toGraphPoints = (levels: number[]): GraphPoint[] =>
-  (levels || []).map((v, i) => ({ t: i, value: v }));
+// link 응답에서 넘어오는 drowsiness_levels는 이미 GraphPoint[] 예정
+const normalizeFromLink = (levels: unknown): GraphPoint[] => {
+  if (isGraphPointArray(levels)) return levels;
+  return [];
+};
+
+// finish 응답의 all_preds: number[] → GraphPoint[] (기본 120초 step)
+const toGraphFromPreds = (preds: unknown, stepSec = 120): GraphPoint[] => {
+  if (!Array.isArray(preds)) return [];
+  const nums = preds
+    .map((v) => (typeof v === "string" ? Number(v) : v))
+    .filter((v) => typeof v === "number" && !Number.isNaN(v)) as number[];
+  return nums.map((value, i) => ({ t: i * stepSec, value }));
+};
 
 // --- LectureDetail Component ---
 const Lectures = () => {
@@ -239,6 +331,48 @@ const Lectures = () => {
   // 🔒 재생 잠금(처음 시청 & 졸음데이터 없음)
   const [isPlaybackLocked, setIsPlaybackLocked] = useState<boolean>(false);
   const [lockReason, setLockReason] = useState<string | null>(null);
+  const [isFirstWatch, setIsFirstWatch] = useState<boolean>(false);
+
+  // ✅ 추가: finish 대기/토스트/진척도 저장 제어
+  const [isFinishing, setIsFinishing] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
+  const [allowProgressSave, setAllowProgressSave] = useState(true);
+  const allowSaveRef = useRef(true);
+
+  // ✅ 페이지 이탈 방지 로직
+  useBlocker(() => {
+    if (isFinishing) {
+      return !window.confirm(
+        "분석이 진행 중입니다. 페이지를 벗어나면 데이터가 유실될 수 있습니다. 정말로 이동하시겠습니까?"
+      );
+    }
+    return false;
+  });
+
+  useEffect(() => {
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (isFinishing) {
+        event.preventDefault();
+        event.returnValue = ""; // Chrome에서 프롬프트를 표시하기 위해 필요
+      }
+    };
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => {
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+    };
+  }, [isFinishing]);
+
+  useEffect(() => {
+    allowSaveRef.current = allowProgressSave;
+  }, [allowProgressSave]);
+
+  // 토스트 자동 숨김
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 3000);
+    return () => clearTimeout(t);
+  }, [toast]);
 
   const progressRef = useRef<{ videoId: number | null; percent: number }>({
     videoId: null,
@@ -250,9 +384,9 @@ const Lectures = () => {
   const [authCode, setAuthCode] = useState<string | null>(null);
   const [isPaired, setIsPaired] = useState<boolean>(false);
   const [isDetecting, setIsDetecting] = useState<boolean>(false);
-  const [drowsinessData, setDrowsinessData] = useState<GraphPoint[] | null>([]);
+  const [drowsinessData, setDrowsinessData] = useState<GraphPoint[]>([]);
   const [drowsinessMessage, setDrowsinessMessage] = useState<string | null>(
-    "Start the session to begin drowsiness detection."
+    "기기에서 인증 코드를 입력해 페어링을 완료하면 재생이 시작됩니다."
   );
 
   // ▶️ 자동 finish 중복 방지
@@ -260,6 +394,9 @@ const Lectures = () => {
 
   // === 저장 로직: 선언을 위쪽에 두고 useMemo로 디바운스 인스턴스 고정 ===
   const performSave = useCallback(async () => {
+    // ✅ 첫 시청 동안은 저장 금지
+    if (!allowSaveRef.current) return;
+
     const { videoId, percent } = progressRef.current;
     if (videoId !== null && percent > 0 && percent <= 100) {
       try {
@@ -307,57 +444,81 @@ const Lectures = () => {
     }
   };
 
-  const handleFinishSession = async () => {
-    if (!sessionId) {
-      setDrowsinessMessage("Session not started.");
-      return;
-    }
-    try {
-      const response = await apiClient.post("/students/drowsiness/finish", {
-        session_id: sessionId,
-        student_uid: uid,
-      });
-      setDrowsinessData(toGraphPoints(response.data || []));
-      setDrowsinessMessage("Session finished. Click 'Start Session' to begin a new one.");
-    } catch (error) {
-      console.error("Error finishing session:", error);
-      setDrowsinessMessage("Failed to finish session.");
-    } finally {
-      setSessionId(null);
-      setAuthCode(null);
-      setIsPaired(false);
-      setIsDetecting(false);
-    }
-  };
+  // 🔧 실패 시 초기 상태로 완전 복귀
+  const resetToPreSession = useCallback((message?: string) => {
+    console.log("resetToPreSession 호출", { message });
+    setSessionId(null);
+    setAuthCode(null);
+    setIsPaired(false);
+    setIsDetecting(false);
+    setIsFirstWatch(true);         // Mesh 보이게
+    setIsPlaybackLocked(true);     // '세션 시작' 버튼 보이게
+    setDrowsinessData([]);         // 그래프 비우기
+    setDrowsinessMessage(message ?? "세션이 종료되었습니다. 다시 시작해 주세요.");
+    setAllowProgressSave(false);   // 첫 시청 중 저장 금지
+    // pendingHlsSrc는 그대로 두면 페어링 완료 시 자동 재생 가능(초기 설계 유지)
+  }, []);
 
   // 🔔 영상 종료 시 자동 finish
-  const handleVideoEnded = useCallback(async () => {
-    if (sentAutoFinishRef.current) return;
-    sentAutoFinishRef.current = true;
+  const handleVideoEnded = useCallback(
+    async () => {
+      if (sentAutoFinishRef.current) return;
+      sentAutoFinishRef.current = true;
 
-    // 진행률 최종 저장 시도
-    debouncedSaveProgress.cancel();
-    await performSave();
+      // 진행률 최종 저장 시도
+      debouncedSaveProgress.cancel();
+      await performSave();
 
-    if (sessionId) {
-      try {
-        const resp = await apiClient.post("/students/drowsiness/finish", {
-          session_id: sessionId,
-          student_uid: uid,
-        });
-        setDrowsinessData(toGraphPoints(resp.data || []));
-        setDrowsinessMessage("Session finished.");
-      } catch (e) {
-        console.error("Auto finish failed:", e);
-        setDrowsinessMessage("Auto finish failed.");
-      } finally {
-        setSessionId(null);
-        setAuthCode(null);
-        setIsPaired(false);
-        setIsDetecting(false);
+      if (sessionId) {
+        try {
+          // ✅ finish 대기 UI on
+          setIsFinishing(true);
+
+          const resp = await apiClient.post("/students/drowsiness/finish", {
+            session_id: sessionId,
+            student_uid: uid,
+          });
+          console.log("응답 완료1", resp);
+
+          const status = resp?.status ?? 0;
+
+          // finish 응답에서 all_preds → GraphPoint[]
+          const preds = resp?.data?.prediction?.details?.all_preds ?? [];
+          const points = toGraphFromPreds(preds, 120); // 2분 단위(120초)
+          setDrowsinessData(points);
+
+          if (status === 200) {
+            console.log("resp 200 진입", resp);
+            setDrowsinessMessage(
+              resp?.data?.message || "졸음 분석이 완료되었습니다."
+            );
+            setToast("졸음 분석이 완료되었습니다.");
+            setAllowProgressSave(true);
+
+            // ✅ 알림 후 새로고침
+            alert("졸음 분석이 완료되었습니다.");
+            window.location.reload();
+          } else {
+            console.log("resp 200 아님 - 실패 처리", status, resp);
+            resetToPreSession("분석 처리에 실패했습니다. 다시 시도해 주세요.");
+          }
+        } catch (e: any) {
+          console.error("Auto finish failed:", e);
+          const httpStatus = e?.response?.status;
+          // 4xx/5xx 포함 모든 에러 동일 정책으로 초기화
+          resetToPreSession(
+            httpStatus
+              ? `분석 처리에 실패했습니다. (HTTP ${httpStatus}) 다시 시도해 주세요.`
+              : "졸음 분석 처리에 실패했습니다.(HTTP 요청 에러)"
+          );
+        } finally {
+          // finish 요청 이후 상태 정리
+          setIsFinishing(false);
+        }
       }
-    }
-  }, [debouncedSaveProgress, performSave, sessionId, uid]);
+    },
+    [debouncedSaveProgress, performSave, sessionId, uid, resetToPreSession]
+  );
 
   // Firebase 페어링 상태 감지 + 잠금 해제
   useEffect(() => {
@@ -365,7 +526,6 @@ const Lectures = () => {
 
     setIsPaired(false);
     const dbRef = ref(db, `${sessionId}/pairing/paired`);
-
 
     const listener = onValue(dbRef, (snapshot) => {
       if (snapshot.val() === true) {
@@ -383,7 +543,6 @@ const Lectures = () => {
         });
       }
     });
-
 
     return () => {
       off(dbRef, "value", listener);
@@ -414,19 +573,21 @@ const Lectures = () => {
       const response = await apiClient.post<{
         s3_link: string;
         watched_percent: number;
-        drowsiness_levels?: number[];
+        drowsiness_levels?: unknown; // GraphPoint[] 예상, unknown으로 받기
       }>("/students/lecture/video/link", { video_id: videoId });
 
       const s3 = response.data?.s3_link;
       const watched = response.data?.watched_percent ?? 0;
-      const levels = response.data?.drowsiness_levels ?? [];
+      const levelsRaw = response.data?.drowsiness_levels;
+      const levels = normalizeFromLink(levelsRaw); // 안전 변환
 
-      console.log(levels)
+      // 디버깅용
+      console.log("link levelsRaw:", levelsRaw);
 
       if (!s3) throw new Error("비디오 링크를 가져올 수 없습니다.");
 
       // ✅ 최초 시청 & 졸음 데이터 없음 → 재생 잠금
-      if (watched === 0 && levels.length === 0) {
+      if (levels.length === 0) {
         setIsPlaybackLocked(true);
         setLockReason(
           "처음 시청하는 영상입니다. 기기를 페어링하여 졸음 감지 세션을 시작해 주세요."
@@ -434,6 +595,9 @@ const Lectures = () => {
         setPendingHlsSrc(s3); // 페어링 완료 시 재생
         setDrowsinessData([]); // 그래프 없음
         setInitialWatchedPercent(0);
+        setIsFirstWatch(true);
+        // ✅ 첫 시청 동안은 진척도 저장 비활성화
+        setAllowProgressSave(false);
         return; // 재생하지 않음
       }
 
@@ -444,7 +608,11 @@ const Lectures = () => {
       setHlsSrc(s3);
       setPendingHlsSrc(null);
       setInitialWatchedPercent(watched || 0);
-      if (levels.length > 0) setDrowsinessData(toGraphPoints(levels));
+      setIsFirstWatch(false);
+      setDrowsinessData(levels); // 그대로 사용
+
+      // ✅ 이어보기/재시청은 저장 허용
+      setAllowProgressSave(true);
     } catch (err: any) {
       console.error(`[fetchHlsLink] Error fetching HLS link for ${videoId}:`, err);
       setPlayerError(err.message || "비디오 링크 로딩 중 오류 발생");
@@ -466,8 +634,7 @@ const Lectures = () => {
       setLectureName(passedLectureName || `Lecture ID ${lectureId}`);
       try {
         const lectureIdNumber = parseInt(lectureId, 10);
-        if (isNaN(lectureIdNumber))
-        throw new Error("Invalid Lecture ID format.");
+        if (isNaN(lectureIdNumber)) throw new Error("Invalid Lecture ID format.");
         const response = await apiClient.post<{ videos: Video[] }>(
           "/students/lecture/video",
           { lecture_id: lectureIdNumber }
@@ -510,7 +677,10 @@ const Lectures = () => {
           percent >= 0 && percent <= 100 ? percent : currentPercentInRef;
         if (newPercent > currentPercentInRef) {
           progressRef.current.percent = newPercent;
-          debouncedSaveProgress();
+          // ✅ 첫 시청 동안은 저장 안 함
+          if (allowSaveRef.current) {
+            debouncedSaveProgress();
+          }
         }
       }
     },
@@ -563,9 +733,9 @@ const Lectures = () => {
                       onClick={() => handleVideoSelect(video)}
                     >
                       <VideoInfo>
-                        <VideoMeta>Week {video.index + 1}</VideoMeta>
+                        <VideoMeta>Week {video.index}</VideoMeta>
                         <VideoTitle>
-                          Chapter {video.index + 1}. {video.title}
+                          Chapter {video.index}. {video.title}
                         </VideoTitle>
                         <VideoMeta>
                           {new Date(video.upload_at).toLocaleDateString()}
@@ -599,6 +769,11 @@ const Lectures = () => {
 
         <RightColumn isListVisible={isListVisible}>
           <Card>
+            {/* ✅ finish 대기 중 메시지 */}
+            {isFinishing && (
+              <MessageContainer>졸음 분석 진행 중...</MessageContainer>
+            )}
+
             {playerLoading && (
               <MessageContainer>Loading video...</MessageContainer>
             )}
@@ -617,9 +792,11 @@ const Lectures = () => {
                   >
                     {isDetecting ? "세션 진행 중..." : "졸음 감지 세션 시작"}
                   </DrowsinessButton>
-                  <DrowsinessMessage>
-                    기기에서 인증 코드를 입력해 페어링을 완료하면 재생이 시작됩니다.
-                  </DrowsinessMessage>
+
+                  {drowsinessMessage && (
+                    <DrowsinessMessage>{drowsinessMessage}</DrowsinessMessage>
+                  )}
+                  <DrowsinessMessage></DrowsinessMessage>
                 </div>
               </MessageContainer>
             )}
@@ -635,7 +812,7 @@ const Lectures = () => {
                   src={hlsSrc}
                   onTimeUpdate={handleTimeUpdate}
                   initialSeekPercent={initialWatchedPercent}
-                  graphData={drowsinessData || []}
+                  graphData={drowsinessData}
                   restrictInteract={initialWatchedPercent === 0}
                   onEnded={handleVideoEnded} // ✅ 끝나면 자동 finish
                 />
@@ -653,28 +830,25 @@ const Lectures = () => {
             )}
           </Card>
 
-          <Card>
-            <SectionTitle>Drowsiness Detection</SectionTitle>
-            <MediaPipeFaceMesh sessionId={sessionId} isPaired={isPaired} />
-            {!isDetecting ? (
-              <DrowsinessButton
-                onClick={handleStartSession}
-                disabled={!selectedVideo}
-              >
-                Start Session
-              </DrowsinessButton>
-            ) : (
-              <DrowsinessButton onClick={handleFinishSession}>
-                Finish Session
-              </DrowsinessButton>
-            )}
-
-            {drowsinessMessage && (
-              <DrowsinessMessage>{drowsinessMessage}</DrowsinessMessage>
-            )}
-          </Card>
+          {isFirstWatch && (
+            <Card>
+              <SectionTitle>Drowsiness Detection</SectionTitle>
+              <MediaPipeFaceMesh sessionId={sessionId} isPaired={isPaired} />
+            </Card>
+          )}
         </RightColumn>
       </ContentLayout>
+
+      {/* ✅ 토스트 */}
+      {toast && <Toast>{toast}</Toast>}
+
+      {/* ✅ 로딩 오버레이 */}
+      {isFinishing && (
+        <Overlay>
+          <Spinner />
+          <OverlayMessage>졸음 수준 분석 진행 중...</OverlayMessage>
+        </Overlay>
+      )}
     </DetailPageContainer>
   );
 };
