@@ -1,9 +1,35 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import styled from "styled-components";
 import apiClient from "../../api/apiClient";
 import { useNavigate } from "react-router-dom";
-import profileImage from '../../assets/profileImage.svg'
+import profileImage from "../../assets/profileImage.svg";
 
+// Chart.js (react-chartjs-2 없이 직접 사용)
+import {
+  Chart,
+  LineController,
+  LineElement,
+  PointElement,
+  LinearScale,
+  CategoryScale,
+  Tooltip,
+  Legend,
+  Filler,
+  ChartOptions,
+  ChartData,
+} from "chart.js";
+
+// Chart.js 전역 등록 (한 번만)
+Chart.register(
+  LineController,
+  LineElement,
+  PointElement,
+  LinearScale,
+  CategoryScale,
+  Tooltip,
+  Legend,
+  Filler
+);
 
 // --- Styled Components for Dashboard ---
 const MainTitle = styled.h2`
@@ -126,7 +152,6 @@ const WideCard = styled(Card)`
   justify-content: center;
   align-items: center;
   color: ${(props) => props.theme.subTextColor}; /* 임시 텍스트 색상 */
-  /* 나중에 실제 내용 채우기 */
 
   @media (max-width: 1024px) {
     flex-basis: auto; /* 세로로 쌓일 때 기본 크기 */
@@ -340,8 +365,43 @@ interface IncompleteVideo {
   video_image_url: string | null;
 }
 
-// --- Dashboard Component ---
+// --- Drowsiness Graph 타입/유틸 ---
+interface GraphPoint {
+  t: number; // 초(sec)
+  value: number; // 졸음 지표 값
+}
 
+// 안전 가드
+const isGraphPointArray = (v: unknown): v is GraphPoint[] =>
+  Array.isArray(v) &&
+  v.every(
+    (x) =>
+      x &&
+      typeof x === "object" &&
+      "t" in x &&
+      "value" in x &&
+      typeof (x as any).t === "number" &&
+      typeof (x as any).value === "number"
+  );
+
+// link 응답의 drowsiness_levels → GraphPoint[]
+const normalizeFromLink = (levels: unknown): GraphPoint[] => {
+  if (isGraphPointArray(levels)) return levels;
+  return [];
+};
+
+// mm:ss 포맷
+const secToMMSS = (s: number) => {
+  const m = Math.floor(s / 60)
+    .toString()
+    .padStart(2, "0");
+  const ss = Math.floor(s % 60)
+    .toString()
+    .padStart(2, "0");
+  return `${m}:${ss}`;
+};
+
+// --- Dashboard Component ---
 const Dashboard = () => {
   const navigate = useNavigate();
   const [todayClasses, setTodayClasses] = useState<Lecture[]>([]);
@@ -351,6 +411,16 @@ const Dashboard = () => {
   const [profileLoading, setProfileLoading] = useState<boolean>(true);
   const [incompleteVideos, setIncompleteVideos] = useState<IncompleteVideo[]>([]);
   const [videosLoading, setVideosLoading] = useState<boolean>(true);
+
+  // Drowsiness Chart 상태
+  const [drowLoading, setDrowLoading] = useState<boolean>(false);
+  const [drowError, setDrowError] = useState<string | null>(null);
+  const [drowPoints, setDrowPoints] = useState<GraphPoint[] | null>(null);
+  const [drowVideoMeta, setDrowVideoMeta] = useState<{ videoId: number; title?: string } | null>(null);
+
+  // Chart.js 캔버스/인스턴스 refs
+  const chartRef = useRef<HTMLCanvasElement | null>(null);
+  const chartInstanceRef = useRef<Chart | null>(null);
 
   const today = new Date();
   const formattedToday = formatDateWithDay(today);
@@ -365,9 +435,7 @@ const Dashboard = () => {
     const fetchLectures = async () => {
       setLoading(true);
       try {
-        const response = await apiClient.get<{ lectures: Lecture[] }>(
-          "/students/lecture"
-        );
+        const response = await apiClient.get<{ lectures: Lecture[] }>("/students/lecture");
         const allLectures = response.data.lectures || [];
 
         const todayDate = new Date();
@@ -377,7 +445,7 @@ const Dashboard = () => {
         tomorrowDate.setDate(todayDate.getDate() + 1);
         const tomorrowDay = tomorrowDate.getDay();
 
-        // [수정 1] 한글과 영어 요일을 모두 매핑하도록 dayMap 확장
+        // 한글/영어 요일 모두 매핑
         const dayMap: { [key: string]: number } = {
           일: 0,
           Sun: 0,
@@ -395,26 +463,22 @@ const Dashboard = () => {
           Sat: 6,
         };
 
-        // [수정 2] 문자열 전체에서 한글/영어 요일을 찾는 더 유연한 정규식 사용
+        // 문자열 전체에서 요일 추출
         const getDaysFromSchedule = (schedule: string): string[] => {
-          // e.g., "월수 10:00", "Mon 09:00", "Tue,Thu 13:00" 등을 모두 처리
           const regex = /(일|월|화|수|목|금|토|Sun|Mon|Tue|Wed|Thu|Fri|Sat)/g;
           const matches = schedule.match(regex);
-          return matches || []; // 매칭되는 것이 없으면 빈 배열 반환
+          return matches || [];
         };
 
         const todayLectures = allLectures.filter((lecture) => {
           const scheduleDays = getDaysFromSchedule(lecture.schedule);
-          // 스케줄에 요일 정보가 없는 경우, 매일 있는 수업으로 간주하지 않으므로 필터링
           if (scheduleDays.length === 0) return false;
-
           return scheduleDays.some((dayStr) => dayMap[dayStr] === todayDay);
         });
 
         const tomorrowLectures = allLectures.filter((lecture) => {
           const scheduleDays = getDaysFromSchedule(lecture.schedule);
           if (scheduleDays.length === 0) return false;
-
           return scheduleDays.some((dayStr) => dayMap[dayStr] === tomorrowDay);
         });
 
@@ -442,9 +506,7 @@ const Dashboard = () => {
     const fetchIncompleteVideos = async () => {
       setVideosLoading(true);
       try {
-        const response = await apiClient.get<IncompleteVideo[]>(
-          "/students/recent-incomplete-videos"
-        );
+        const response = await apiClient.get<IncompleteVideo[]>("/students/recent-incomplete-videos");
         setIncompleteVideos(response.data);
       } catch (err) {
         console.error("Failed to fetch incomplete videos:", err);
@@ -457,6 +519,123 @@ const Dashboard = () => {
     fetchProfile();
     fetchIncompleteVideos();
   }, []); // 의존성 배열은 비어있는 것이 맞습니다.
+
+  // 가장 최근 미완강 영상의 drowsiness_levels 로드
+  useEffect(() => {
+    if (videosLoading || incompleteVideos.length === 0) return;
+
+    const latest = [...incompleteVideos].sort(
+      (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+    )[0];
+    const videoId = latest.video_id;
+
+    const fetchDrowsiness = async () => {
+      setDrowLoading(true);
+      setDrowError(null);
+      setDrowPoints(null);
+      try {
+        const resp = await apiClient.post<{
+          s3_link: string;
+          watched_percent: number;
+          drowsiness_levels?: unknown;
+          video_title?: string;
+        }>("/students/lecture/video/link", { video_id: videoId });
+
+        const points = normalizeFromLink(resp.data?.drowsiness_levels);
+        setDrowPoints(points.length ? points : []);
+        setDrowVideoMeta({ videoId, title: resp.data?.video_title });
+      } catch (e: any) {
+        console.error("Failed to fetch drowsiness levels:", e);
+        setDrowError(e?.message || "Failed to load drowsiness data.");
+      } finally {
+        setDrowLoading(false);
+      }
+    };
+
+    fetchDrowsiness();
+  }, [videosLoading, incompleteVideos]);
+
+  // 차트 생성/업데이트
+  useEffect(() => {
+    if (!chartRef.current) return;
+
+    // 기존 인스턴스 파괴
+    if (chartInstanceRef.current) {
+      chartInstanceRef.current.destroy();
+      chartInstanceRef.current = null;
+    }
+
+    if (!drowPoints || drowPoints.length === 0 || drowError) return;
+
+    const labels = drowPoints.map((p) => secToMMSS(p.t));
+    const dataVals = drowPoints.map((p) => p.value);
+
+    // 테마 반영하려면 props.theme를 prop으로 내려서 사용할 수도 있음
+    const borderColor = "#888";
+    const bgColor = "rgba(136,136,136,0.15)";
+
+    const data: ChartData<"line"> = {
+      labels,
+      datasets: [
+        {
+          label: "Drowsiness Level",
+          data: dataVals,
+          tension: 0.25,
+          borderWidth: 2,
+          borderColor,
+          backgroundColor: bgColor,
+          pointRadius: 0,
+          fill: true,
+        },
+      ],
+    };
+
+    const options: ChartOptions<"line"> = {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: true, labels: { boxWidth: 12 } },
+        tooltip: {
+          callbacks: {
+            title: (items) => (items[0] ? `Time ${items[0].label}` : ""),
+            label: (item) => `Level: ${item.formattedValue}`,
+          },
+        },
+      },
+      scales: {
+        x: {
+          grid: { display: false },
+          ticks: { autoSkip: true, maxTicksLimit: 8 },
+        },
+        y: {
+          beginAtZero: true,
+          grid: { color: "rgba(0,0,0,0.08)" },
+          ticks: { precision: 0 },
+        },
+      },
+    };
+
+    chartInstanceRef.current = new Chart(chartRef.current, {
+      type: "line",
+      data,
+      options,
+    });
+
+    // cleanup
+    return () => {
+      if (chartInstanceRef.current) {
+        chartInstanceRef.current.destroy();
+        chartInstanceRef.current = null;
+      }
+    };
+  }, [drowPoints, drowError]);
+
+  // ====== 여기부터: drowVideoMeta.videoId에 해당하는 title을 incompleteVideos에서 찾기 ======
+  const latestFromList = React.useMemo(
+    () => (drowVideoMeta ? incompleteVideos.find((v) => v.video_id === drowVideoMeta.videoId) : undefined),
+    [incompleteVideos, drowVideoMeta]
+  );
+  const latestTitle = latestFromList?.video_name ?? drowVideoMeta?.title ?? "";
 
   const getTimeFromSchedule = (schedule: string): string => {
     const match = schedule.match(/\d{2}:\d{2}/);
@@ -478,9 +657,7 @@ const Dashboard = () => {
             ) : todayClasses.length > 0 ? (
               todayClasses.map((item) => (
                 <ListItem key={item.lecture_id}>
-                  <ListIcon className="material-symbols-outlined dot-icon">
-                    fiber_manual_record
-                  </ListIcon>
+                  <ListIcon className="material-symbols-outlined dot-icon">fiber_manual_record</ListIcon>
                   <ItemTime>{getTimeFromSchedule(item.schedule)}</ItemTime>
                   <ItemText>{item.lecture_name}</ItemText>
                 </ListItem>
@@ -495,7 +672,6 @@ const Dashboard = () => {
         <Card>
           <CardTitle>Tomorrow's Class</CardTitle>
           <CardSubtitle>{formattedTomorrow}</CardSubtitle>{" "}
-          {/* 날짜는 동적으로 받아와야 함 */}
           <List>
             {loading ? (
               <ListItem>
@@ -504,9 +680,7 @@ const Dashboard = () => {
             ) : tomorrowClasses.length > 0 ? (
               tomorrowClasses.map((item) => (
                 <ListItem key={item.lecture_id}>
-                  <ListIcon className="material-symbols-outlined dot-icon">
-                    fiber_manual_record
-                  </ListIcon>
+                  <ListIcon className="material-symbols-outlined dot-icon">fiber_manual_record</ListIcon>
                   <ItemTime>{getTimeFromSchedule(item.schedule)}</ItemTime>
                   <ItemText>{item.lecture_name}</ItemText>
                 </ListItem>
@@ -524,12 +698,9 @@ const Dashboard = () => {
           ) : profile ? (
             <>
               <ProfileImage
-                src={
-                  profile.profile_image_url ||
-                  profileImage
-                }
+                src={profile.profile_image_url || profileImage}
                 alt="Profile"
-                crossOrigin="anonymous" /* 이 속성을 추가합니다! */
+                crossOrigin="anonymous"
               />
               <div style={{ textAlign: "center" }}>
                 <ProfileName>{profile.name}</ProfileName>
@@ -543,7 +714,65 @@ const Dashboard = () => {
       </Row>
 
       <Row>
-        <WideCard>Detection Analytics (내용 추가 예정)</WideCard>
+        {/* WideCard: Detection Analytics with Chart.js */}
+        <WideCard>
+          <div style={{ width: "100%", height: 260, display: "flex", flexDirection: "column" }}>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "baseline",
+                width: "100%",
+                padding: "18px 0 10px",
+              }}
+            >
+              <CardTitle style={{ margin: 0 }}>
+                Detection Analytics
+              </CardTitle>
+
+              {(latestTitle || drowVideoMeta?.videoId) && (
+                <CardSubtitle style={{ margin: 0 }}>
+                  Latest Incomplete • {latestTitle || "Untitled"}
+                  {drowVideoMeta?.videoId ? ` (ID: ${drowVideoMeta.videoId})` : ""}
+                </CardSubtitle>
+              )}
+            </div>
+
+            {drowLoading && (
+              <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                Loading chart...
+              </div>
+            )}
+
+            {!drowLoading && drowError && (
+              <div
+                style={{
+                  flex: 1,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  color: "#f66",
+                  textAlign: "center",
+                }}
+              >
+                {drowError}
+              </div>
+            )}
+
+            {!drowLoading && !drowError && (drowPoints?.length ?? 0) === 0 && (
+              <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", textAlign: "center" }}>
+                No drowsiness data yet. Watch first with the paired device to collect data.
+              </div>
+            )}
+
+            {!drowLoading && !drowError && (drowPoints?.length ?? 0) > 0 && (
+              <div style={{ flex: 1 }}>
+                <canvas ref={chartRef} />
+              </div>
+            )}
+          </div>
+        </WideCard>
+
         <Card>
           <CardTitle>To-do ({weekDateRange})</CardTitle>
           <List>
@@ -554,9 +783,7 @@ const Dashboard = () => {
             ) : incompleteVideos.length > 0 ? (
               incompleteVideos.map((video) => (
                 <ListItem key={video.video_id}>
-                  <ListIcon className="material-symbols-outlined play-icon">
-                    play_circle
-                  </ListIcon>
+                  <ListIcon className="material-symbols-outlined play-icon">play_circle</ListIcon>
                   <ItemText>
                     {video.lecture_name} - {video.video_name} <br />
                     <span style={{ fontSize: "0.8rem", color: "#888" }}>
@@ -582,17 +809,11 @@ const Dashboard = () => {
             <p>Loading courses...</p>
           ) : incompleteVideos.length > 0 ? (
             incompleteVideos.map((video) => (
-              <CourseCard
-                key={video.video_id}
-                onClick={() => navigate(`/student/courses/${video.lecture_id}`)}
-              >
+              <CourseCard key={video.video_id} onClick={() => navigate(`/student/courses/${video.lecture_id}`)}>
                 <CourseImage
-                  src={
-                    video.video_image_url ||
-                    "https://via.placeholder.com/250x140/ccc/fff?text=Video"
-                  }
+                  src={video.video_image_url || "https://via.placeholder.com/250x140/ccc/fff?text=Video"}
                   alt={video.video_name}
-                  crossOrigin="anonymous" /* 이 속성을 추가합니다! */
+                  crossOrigin="anonymous"
                 />
                 <CourseInfo>
                   <CourseTitle>{video.lecture_name}</CourseTitle>
@@ -602,9 +823,7 @@ const Dashboard = () => {
                 <CourseFooter>
                   <div style={{ flexGrow: 1 }} />
                   <PlayButton title="Continue course">
-                    <span className="material-symbols-outlined">
-                      play_arrow
-                    </span>
+                    <span className="material-symbols-outlined">play_arrow</span>
                   </PlayButton>
                 </CourseFooter>
               </CourseCard>
