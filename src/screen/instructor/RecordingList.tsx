@@ -96,7 +96,7 @@ const RecordingList = () => {
 
   return (
     <Container>
-      <Title>녹화할 강의 선택</Title>
+      <Title>강의 영상을 업로드할 강의 선택</Title>
       <List>
         {lectureList.map((lecture) => (
           <LectureCard key={lecture.id}>
@@ -104,7 +104,7 @@ const RecordingList = () => {
             <Button
               onClick={() => navigate(`/instructor/recording/${lecture.id}`)}
             >
-              녹화 시작하기
+              영상 업로드 시작하기
             </Button>
           </LectureCard>
         ))}
